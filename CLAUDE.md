@@ -107,3 +107,36 @@ returning; drop non-matching items. Never invent an assessment.
   Parsed C1 (4 turns / 3 items) and C9 (7 turns / 7 items, surgical refinement) verified.
 - What worked: marker-based parsing robust to turn-number gaps and multiline JD blockquotes.
 - Not done yet: app logic (all app/* except intent are stubs), retrieval index, evals.
+
+### 2026-07-02 — app/catalog.py (loader + hard-eval firewall)
+- Loads catalog once at import (377 records) into normalized records with fields:
+  entity_id, name, url(from `link`), description, keys, test_type(comma-joined letters
+  in canonical A,B,C,D,E,K,P,S order), job_levels, languages, duration_minutes(int|None),
+  remote(bool), adaptive(bool), search_doc. Never fetches at runtime.
+- Scope: NO solution-type/product-type field exists in the catalog — all 377 records
+  share identical field sets (all remote=yes, all under /product-catalog/view/). Nothing
+  reliably distinguishes Individual Test Solutions from Job Solutions, and all 43
+  ground-truth items are present, so NO filtering is applied. Loading all 377.
+- API: get_by_url (trailing-slash tolerant), find_by_name (alias -> exact -> fuzzy;
+  fuzzy uses whole-string ratio * token-coverage so a distinctive unmatched token drops
+  the match), validate_recommendations (resolves by name, url+test_type ALWAYS from
+  catalog, drops unresolvable, dedupes by url, clamps to 10, preserves order).
+- Data-quality fixes found & handled:
+  * Exactly 1 record has a control-char-corrupted name ("Microsoft \n    365 (New)" —
+    "Excel" destroyed by upstream unescaped control chars). URL intact; repaired the
+    name by url at load time (_NAME_REPAIRS) -> "Microsoft Excel 365 (New)". Names are
+    also whitespace-collapsed generally.
+  * "Verify G+" is ambiguous: catalog has BOTH "Verify - G+" (verify-g/) and
+    "SHL Verify Interactive G+" (shl-verify-interactive-g/), and they normalize to the
+    same string. Traces + behavioral rule 3 always mean the Interactive one, so a curated
+    alias resolves "Verify G+"/"opq"/etc. and is checked BEFORE exact match.
+  * 4 ground-truth items have a trace-table test_type that differs from catalog-derived
+    (ordering "P,C" vs "C,P"; spacing "C, K"; a report tagged "D" vs its 6 keys; SVAR
+    "K" vs keys "S"). Catalog-derived test_type is authoritative per the contract
+    (derive from `keys`); Recall@10 is scored on url, so these are expected, not bugs.
+- Tests: tests/test_catalog.py — 59 pass. Covers url lookup (+trailing slash), fuzzy
+  ("OPQ32r","Verify G+","opq",typo), rejects fake "Rust Programming (New)" (would else
+  false-match "R Programming"), validate drops fakes + overrides LLM url/test_type +
+  preserves order + dedupes + clamps, and ALL 43 ground-truth names resolve to the
+  record at their labeled url.
+- Metric: 377 loaded; 43/43 ground-truth items resolve by both url and name; 0 missing.
