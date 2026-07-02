@@ -462,6 +462,26 @@ def _shortlist_table(recs: list[Recommendation]) -> str:
     return header + "\n" + "\n".join(rows)
 
 
+def _recover_shortlist(messages: list[dict]) -> list[dict]:
+    """Deterministically recover the CURRENT shortlist from history: parse the last
+    assistant markdown table and resolve its names against the catalog. Returns
+    validated recommendation dicts (catalog url/test_type). Empty if none yet.
+
+    This is the Python-side guarantee behind rule 5: once a shortlist exists, the
+    LLM never gets a chance to drop it — we re-attach it at the response boundary."""
+    names = _current_shortlist_names(messages)
+    if not names:
+        return []
+    return catalog.validate_recommendations([{"name": n} for n in names])
+
+
+def _build_response(reply: str, cleaned: list[dict], eoc: bool) -> ChatResponse:
+    recs = [Recommendation(**c) for c in cleaned] or None
+    if recs:  # embed the table so the shortlist is recoverable next turn
+        reply = f"{reply}\n\n{_shortlist_table(recs)}"
+    return ChatResponse(reply=reply, recommendations=recs, end_of_conversation=eoc)
+
+
 def handle_chat(messages: Any) -> ChatResponse:
     """Entry point: full history in, schema-valid ChatResponse out. Never raises."""
     global _start_time
@@ -474,38 +494,44 @@ def handle_chat(messages: Any) -> ChatResponse:
                   "recommend SHL assessments.",
             recommendations=None, end_of_conversation=False)
 
+    # Recover any existing shortlist up front so EVERY exit path can re-attach it.
+    existing = _recover_shortlist(msgs)
+
     try:
         route = _route(msgs)
         result = _dispatch(route, msgs)
     except llm.LLMError:
-        return ChatResponse(
-            reply="Sorry, I had trouble processing that. Could you rephrase the role "
-                  "or skills you're hiring for?",
-            recommendations=None, end_of_conversation=False)
+        return _build_response(
+            "Sorry, I had trouble processing that. Could you rephrase the role "
+            "or skills you're hiring for?", existing, False)
     except Exception:  # noqa: BLE001 - defensive: never 500
-        return ChatResponse(
-            reply="Sorry, something went wrong. Could you rephrase that?",
-            recommendations=None, end_of_conversation=False)
+        return _build_response(
+            "Sorry, something went wrong. Could you rephrase that?", existing, False)
 
-    return _finalize(route, result)
+    return _finalize(route, result, existing)
 
 
-def _finalize(route: Route, result: AgentResult) -> ChatResponse:
+def _finalize(route: Route, result: AgentResult, existing: list[dict]) -> ChatResponse:
+    # No new recommendations from the branch (clarify / compare / refuse): once a
+    # shortlist exists it MUST persist — re-attach it (rule 5, enforced in code).
     if result.recommendation_names is None:
-        return ChatResponse(reply=result.reply, recommendations=None,
-                            end_of_conversation=result.end_of_conversation)
+        return _build_response(result.reply, existing, result.end_of_conversation)
 
     cleaned = catalog.validate_recommendations(
         [{"name": n} for n in result.recommendation_names]
     )
 
-    # Never return an empty shortlist when we committed to recommending (rule 5).
-    if not cleaned and route.intent in ("recommend", "refine"):
-        aspects = route.aspects or _aspects_from_facts(route.facts)
-        fallback = retrieval.multi_search(aspects, top_k=5) if aspects else []
-        cleaned = catalog.validate_recommendations(
-            [{"name": r["name"]} for r in fallback]
-        )
+    # Never return an empty shortlist when a list existed or we committed to
+    # recommending (rule 5): prefer the existing shortlist, else retrieval fallback.
+    if not cleaned:
+        if existing:
+            cleaned = existing
+        elif route.intent in ("recommend", "refine"):
+            aspects = route.aspects or _aspects_from_facts(route.facts)
+            fallback = retrieval.multi_search(aspects, top_k=5) if aspects else []
+            cleaned = catalog.validate_recommendations(
+                [{"name": r["name"]} for r in fallback]
+            )
 
     recs = [Recommendation(**c) for c in cleaned] or None
     reply = result.reply

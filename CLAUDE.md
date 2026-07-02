@@ -234,3 +234,139 @@ returning; drop non-matching items. Never invent an assessment.
   selection picked "Java 8 (New)" over "Core Java (Advanced Level) (New)" (no seniority
   yet). Defensible but may cost Recall@10 vs the labeled shortlist — candidate for prompt
   tuning once evals/replay.py gives per-trace numbers.
+
+### 2026-07-02 — Schemas + API hardening + Docker (app/schemas.py, app/main.py, Dockerfile)
+- schemas.py (Pydantic v2): renamed Message -> ChatMessage. ChatMessage and ChatRequest
+  both set model_config extra="ignore" so unknown fields (session_id, timestamps, ids)
+  never error. ChatResponse gained a model_validator(mode="after") that coerces an empty
+  recommendations list to None and clamps >10 to 10 (MAX_RECOMMENDATIONS) — enforces the
+  "null when not recommending, 1-10 when committed" convention regardless of caller.
+- app/retrieval.py: added warmup() (loads index artifacts + embedding model) for startup.
+- app/main.py:
+  * Startup warmup via lifespan (best-effort, try/except; SHL_WARMUP=0 skips it so tests
+    never load torch). catalog loads at import. Nothing loads per request.
+  * /chat is defense-in-depth against ever 500-ing or returning an invalid body:
+    (1) handler wraps handle_chat in try/except -> _FALLBACK; (2) a RequestValidationError
+    handler returns a 200 ChatResponse fallback for /chat (malformed body, bad role,
+    invalid JSON); (3) a catch-all Exception handler returns the same for /chat. Non-/chat
+    paths keep normal 422/500 behavior.
+  * _truncate_history(messages, ~6000 tokens): keeps the FIRST user message (anchor) +
+    walks newest->oldest keeping recent turns within budget, trimming the middle. ~4
+    chars/token heuristic. Applied before handle_chat.
+- Dockerfile: python:3.11-slim, install requirements, COPY app + data (committed catalog +
+  prebuilt index; no runtime fetch), CMD uvicorn ... --port ${PORT:-8000} (shell form so
+  Render/HF Spaces $PORT expands). Added .dockerignore (excludes venv/tests/evals/scripts/
+  traces/.env/docs). HF_HOME set so the embedding model cache lands in /app.
+- Tests: tests/test_main.py — 16 pass (TestClient, mocked LLM, SHL_WARMUP=0). Covers
+  /health; happy-path + clarify shape; fallbacks (LLM failure, missing messages, invalid
+  JSON, bad role) all 200 + valid body; extra unknown fields tolerated; edge inputs (empty
+  messages, history starting with assistant, last msg assistant, non-English -> English);
+  recommendations clamped to 10; injected fakes ("Rust", "Made Up Test") dropped by the
+  firewall; _truncate_history keeps first-user+recent and is a no-op when small.
+- Full suite: 88 passed. Live deploy-path check (lifespan warmup ON + real Groq + real
+  retrieval): graduate-financial-analyst query -> Financial Accounting (K), Economics (K),
+  Verify G+ (A), OPQ32r (P), all catalog urls; malformed body -> 200.
+
+### 2026-07-02 — evals/replay.py (LLM-simulated-user replay) — BASELINE MEASUREMENT
+- Built evals/replay.py mirroring SHL's harness: per-trace persona (system = "hiring
+  stakeholder", facts = all user_turns joined; answer only from facts, else "no
+  preference"; wrap up with "That works, thanks."), first user msg = trace turn-1 verbatim.
+  Loop: simulated user (Groq via llm.complete_text) <-> handle_chat, cap 8 messages, 30s/call
+  (thread + future timeout). Default drives handle_chat directly; --http hits a live /chat.
+  Scores Recall@10 (normalized-url overlap with final_shortlist) on the FINAL agent turn;
+  asserts schema-valid + catalog-only urls on EVERY turn. Writes evals/results/replay_<ts>.json.
+- Full run replay_20260702T063401Z.json. Per-trace:
+    trace  recall@10  turns  notes
+    C1       0.00        8   empty final recs, no eoc, hit turn cap
+    C2       0.60        8   ok (closed, eoc)
+    C3       0.50        8   ok (closed, eoc)
+    C4       0.40        6   ok (closed, eoc)
+    C5       0.20        8   ok (closed, eoc)
+    C6       0.50        6   ok (closed, eoc)
+    C7       0.40        8   ok (closed, eoc)
+    C8       0.60        6   ok (closed, eoc)
+    C9       0.00        8   empty final recs, no eoc, hit turn cap
+    C10      0.00        8   empty final recs, no eoc, hit turn cap
+    MEAN Recall@10 = 0.32
+  Invariants: 0 invalid-schema turns, 0 non-catalog-url turns across all traces (the
+  replay's asserts passed) — the firewall + contract hold. Note: LLM-driven, so numbers
+  vary run-to-run (a C1/C9 smoke run earlier gave 0.33/0.57).
+- Per-trace diagnosis (all 10 are < 0.7):
+  * C1 0.00 — RULE-5 VIOLATION: turns 2-3 produced a shortlist, but the final turn was a
+    CLARIFY (recommendations=null), so the scored response is empty. Also over-clarified
+    ("no preference" didn't stop the questions). Clarify/compare branches don't carry the
+    existing shortlist forward.
+  * C9 0.00 & C10 0.00 — LLM FAILURE, not logic: the router's Groq call hit a transient
+    error under rapid-fire replay load, and the GEMINI FALLBACK IS DEAD (configured
+    GEMINI_MODEL="gemini-1.5-flash" -> 404 on current API; available are gemini-2.0-flash /
+    gemini-2.5-flash). So handle_chat returned the LLMError fallback ("Sorry, I had trouble
+    processing that", recs=null) every turn — and that fallback DISCARDS the existing
+    shortlist (C9 had a turn-1 table). Reproduced on an isolated C9,C10 re-run (0.00/0.00).
+    Groq alone is healthy (direct call OK), so this is fallback-config + rule-5, not Groq.
+  * C4 0.40 — selection mismatch: picked Executive Scenarios (wrong SJT; gold uses Graduate
+    Scenarios) and Economics over the gold finance/numerical mix.
+  * C5 0.20 — retrieval/selection missed the gold Global Skills Assessment + Development
+    Report (report-type products, baseline obs #2); agent chose WriteX Email instead.
+  * C6 0.50 — retrieval missed the exact safety instruments (DSI / Safety & Dependability
+    8.0); picked adjacent Workplace Health & Safety + Industrial Engineering.
+  * C7 0.40 — multi-skill under-coverage: missed Medical Terminology + MS Word + DSI; got
+    Written Spanish + HIPAA + defaults only.
+  * C3 0.50, C2 0.60, C8 0.60 — closed correctly with defaults present but retrieval/
+    selection surfaced adjacent items rather than all gold products.
+- Cross-cutting findings (fix in a later pass — measurement only here):
+  (A) Gemini fallback model name is dead -> no resilience when Groq hiccups (caused C9/C10).
+  (B) Rule-5 not enforced on clarify / refuse / compare / LLMError-fallback turns: any turn
+      that yields null recs after a shortlist exists loses Recall (C1, C9, C10). The final
+      scored turn must re-attach the current shortlist recovered from history.
+  (C) Selection/retrieval accuracy ceiling ~0.4-0.6 even on clean closes: recommender picks
+      plausible-but-wrong neighbours; OPQ32r + Verify G+ default injection works and supplies
+      most of the partial recall. Needs retrieval/prompt tuning (esp. report-type + SJT variants).
+
+### 2026-07-02 — Stage 1 (Fix A: LLM resilience) + Stage 2 (Fix B: shortlist persistence)
+STAGE 1 (app/llm.py, evals/replay.py) — DONE, unit-verified:
+- GEMINI_MODEL "gemini-1.5-flash" (404, dead) -> "gemini-2.5-flash"; verified with a direct
+  JSON + text call. (gemini-1.5-flash no longer exists on the current API.)
+- Retry/fallback made deadline-aware: `timeout` is now the TOTAL budget for a complete_*()
+  call; Groq gets one retry with ~2s backoff, then Gemini fallback, all bounded so the
+  agent's two sequential calls fit the 30s/turn budget (previously a slow provider stacked
+  20s x 4 attempts ~= 60-80s). DEFAULT_TIMEOUT 20 -> 13. Added temperature param.
+- replay: simulated user temperature=0 (deterministic scoring); added --runs N (mean per-trace
+  + overall Recall@10, missed-item counts), --pace, per-call executor isolation (a >30s call
+  no longer head-of-line-blocks the rest), and a try/except so a timed-out turn is recorded
+  (timed_out) not fatal. Added optional client-side Groq throttle GROQ_MIN_INTERVAL_S (default
+  0 in prod/tests) to proactively stay under free-tier per-minute limits during evals.
+STAGE 2 (app/agent.py) — DONE, unit-verified:
+- _recover_shortlist(messages): deterministically parse the LAST assistant markdown table and
+  resolve names via the catalog -> validated recs. handle_chat computes this ONCE up front and
+  re-attaches it at EVERY exit path where the branch yields no new recs — clarify, compare,
+  refuse, the LLMError fallback, AND the generic-exception fallback. The LLM can no longer drop
+  an existing shortlist (rule 5 enforced in code, not prompts). _finalize prefers the existing
+  shortlist over the multi_search fallback when validation empties a recommend/refine result.
+- Tests: tests/test_agent.py +2 (clarify-after-shortlist carries it; LLM-failure-after-shortlist
+  carries it). Full unit suite: 89 passed (1 real-LLM test deselected).
+
+### 2026-07-02 — Stages 3-5 BLOCKED: free-tier LLM quota exhausted (measurement infeasible)
+- After Stages 1-2, every attempt to run the replay (the yardstick Stages 3-5 depend on) returned
+  ALL 0.00 — every turn hitting the LLMError fallback ("Sorry, I had trouble processing that").
+- Root cause (diagnosed, NOT a code bug): both free-tier LLM quotas are exhausted from the day's
+  extensive testing/replay (the earlier 3x30-trace runs alone were ~270 calls x ~1.5k tokens).
+  * Groq (llama-3.3-70b-versatile): per-minute TPM limit (~12k). A 6-call spaced probe showed
+    ~50% 429s; single interactive calls succeed but any SUSTAINED run (even 2 easy traces at a
+    10s throttle after a 60s cooldown) degrades to all-fallback.
+  * Gemini (gemini-2.5-flash) free tier: DAILY quota exhausted ("exceeded your current quota",
+    retry-in-~28s but never clears) -> no working fallback when Groq throttles.
+- Consequence: sustained replay/probe measurement is not possible in this session. Applying the
+  Stage 4 selection levers WITHOUT re-measuring after each would violate the measurement-first
+  methodology (can't catch regressions), so they were deliberately NOT applied blind.
+- Ready to resume the moment quota is available (daily reset, or a higher-tier/paid key):
+  * evals/replay.py --runs 3 (throttle via GROQ_MIN_INTERVAL_S if still free-tier) -> Stage 3
+    clean A+B baseline + per-trace missed items.
+  * evals/probes.py (P1-P10) is BUILT and ready (Stage 5 build done); run with the throttle.
+  * Stage 4 levers to apply one-at-a-time with replay after each (grounded in the gold-shortlist
+    analysis already in this log): c1 level-variant (senior->Advanced, grad/entry->Entry; both if
+    unknown), c2 pad to 8-10 with adjacents (report-type for leadership/dev e.g. OPQ Leadership/
+    UCF; SJT-by-population e.g. Graduate Scenarios) — expected biggest mover, c3 name-token
+    keyword boost in retrieval, c4 router aspects (one per skill + one population/level aspect).
+- Independent evidence the pipeline itself is correct (when a call gets through): single live
+  handle_chat calls this session produced valid, catalog-only batteries; 89 unit tests pass;
+  0 schema/non-catalog-url violations in every replay attempt (the firewall + contract hold).

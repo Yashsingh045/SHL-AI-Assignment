@@ -238,6 +238,41 @@ def test_empty_messages_safe():
 
 
 # --------------------------------------------------------------------------- #
+# STAGE 2 — shortlist persistence at the response boundary (rule 5, in code)
+# --------------------------------------------------------------------------- #
+def test_clarify_after_shortlist_carries_shortlist(mock_llm):
+    # A clarify turn AFTER a shortlist exists must re-attach the full shortlist.
+    mock_llm["json_queue"] = [_route_json(intent="clarify", vague=False)]
+    mock_llm["text"] = "Which language variant do you need?"
+    history = [
+        {"role": "user", "content": "java role"},
+        _shortlist_msg([JAVA, OPQ]),
+        {"role": "user", "content": "hmm, one more thing"},
+    ]
+    resp = agent.handle_chat(history)
+    assert resp.recommendations is not None
+    assert [r.name for r in resp.recommendations] == [JAVA, OPQ]
+    assert resp.end_of_conversation is False
+
+
+def test_llm_failure_after_shortlist_carries_shortlist(monkeypatch):
+    # Router LLM fails AFTER a shortlist exists -> fallback must still carry it.
+    def boom(*a, **k):
+        raise agent.llm.LLMError("429")
+    monkeypatch.setattr(agent.llm, "complete_json", boom)
+    history = [
+        {"role": "user", "content": "backend engineer"},
+        _shortlist_msg([JAVA, VERIFY, OPQ]),
+        {"role": "user", "content": "and something about testing?"},
+    ]
+    resp = agent.handle_chat(history)
+    assert resp.recommendations is not None
+    assert [r.name for r in resp.recommendations] == [JAVA, VERIFY, OPQ]
+    assert resp.end_of_conversation is False
+    assert "trouble" in resp.reply.lower() or "wrong" in resp.reply.lower()
+
+
+# --------------------------------------------------------------------------- #
 # real-LLM integration (skipped without a key)
 # --------------------------------------------------------------------------- #
 @pytest.mark.skipif(

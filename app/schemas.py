@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 # Category -> test_type letter. See CLAUDE.md letter map.
 KEY_TO_LETTER: dict[str, str] = {
@@ -21,14 +21,22 @@ KEY_TO_LETTER: dict[str, str] = {
     "Simulations": "S",
 }
 
+MAX_RECOMMENDATIONS = 10
 
-class Message(BaseModel):
+
+class ChatMessage(BaseModel):
+    # Tolerate extra/unknown fields on inbound messages (e.g. ids, timestamps).
+    model_config = ConfigDict(extra="ignore")
+
     role: Literal["user", "assistant"]
     content: str
 
 
 class ChatRequest(BaseModel):
-    messages: list[Message]
+    # Tolerate extra/unknown top-level fields without erroring.
+    model_config = ConfigDict(extra="ignore")
+
+    messages: list[ChatMessage]
 
 
 class Recommendation(BaseModel):
@@ -40,9 +48,20 @@ class Recommendation(BaseModel):
 
 class ChatResponse(BaseModel):
     reply: str
-    # null OR array of 1-10 items (never an empty list — use None instead).
+    # Convention (matches the official traces): null when NOT recommending; a list of
+    # 1-10 items when committed. An empty list is coerced to null; >10 is clamped.
     recommendations: Optional[list[Recommendation]] = Field(default=None)
     end_of_conversation: bool = False
+
+    @model_validator(mode="after")
+    def _normalize_recommendations(self) -> "ChatResponse":
+        recs = self.recommendations
+        if recs is not None:
+            if len(recs) == 0:
+                self.recommendations = None
+            elif len(recs) > MAX_RECOMMENDATIONS:
+                self.recommendations = recs[:MAX_RECOMMENDATIONS]
+        return self
 
 
 class HealthResponse(BaseModel):

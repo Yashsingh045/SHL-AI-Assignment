@@ -82,6 +82,15 @@ def _get_model():
     return _model
 
 
+def warmup() -> None:
+    """Eagerly load the index artifacts AND the embedding model.
+
+    Called at service startup so the first /chat request doesn't pay index/model
+    load latency (which would eat into the 30s per-call budget)."""
+    _index()
+    _get_model()
+
+
 # --------------------------------------------------------------------------- #
 # Ranking helpers
 # --------------------------------------------------------------------------- #
