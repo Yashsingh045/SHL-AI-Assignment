@@ -140,3 +140,32 @@ returning; drop non-matching items. Never invent an assessment.
   preserves order + dedupes + clamps, and ALL 43 ground-truth names resolve to the
   record at their labeled url.
 - Metric: 377 loaded; 43/43 ground-truth items resolve by both url and name; 0 missing.
+
+### 2026-07-02 — Retrieval (app/retrieval.py + scripts/build_index.py)
+- scripts/build_index.py builds & persists to data/index/ (committed; never rebuilt at
+  runtime): bm25_corpus.json (tokenized search_doc), embeddings.npy (all-MiniLM-L6-v2,
+  L2-normalized, shape (377,384) float32), doc_urls.json (row->url alignment), meta.json.
+  Un-ignored data/index/ in .gitignore so the artifacts are committed (task requirement).
+- app/retrieval.py: search(query, top_k=20) fuses BM25-rank and cosine-rank via RRF
+  (k=60); multi_search(aspects, top_k=20) runs search per aspect and fuses across aspects
+  with RRF, deduped by url (one aspect per skill/trait). Pure numpy; no FAISS. Index +
+  embedding model load LAZILY on first query (cheap import; avoids build-time chicken-and-
+  egg; keeps torch off the import path). Shared tokenizer preserves tech markers (c++,c#,g+).
+- Baseline retrieval-only eval (evals/retrieval_check.py): naive single-string query
+  (join of all user_turns) -> multi_search([query]). Per-trace Recall@10 / @20:
+    C1 .33/.33  C2 .40/.60  C3 .75/.75  C4 .60/.60  C5 .20/.40
+    C6 1.00/1.00 C7 .20/.20  C8 .40/.40  C9 .43/.43  C10 .50/1.00
+    MEAN R@10 = 0.48, R@20 = 0.57.  <-- yardstick to beat with agent logic.
+- Why traces fail (grounds the agent design):
+  1. OPQ32r almost never surfaces from a naive role query (generic personality
+     instrument; its text doesn't match "senior leadership"/"sales re-skill"/"healthcare
+     admin"). Yet it's in 8/10 gold shortlists. => the agent must INJECT OPQ32r as a
+     default battery component (rule 3), not rely on retrieval to find it.
+  2. Report-type near-duplicates crowd out the gold ones: "senior leadership" (C1) pulls
+     Enterprise Leadership Report 1.0/2.0, PJM Selection Report ahead of the gold OPQ
+     family, pushing OPQ32r + OPQ UCF Report out of the top-10.
+  3. Multi-skill traces need aspect decomposition, not one blob query: C7 (HIPAA +
+     Medical Terminology + MS Word + DSI + OPQ) retrieves only HIPAA in top-10 because the
+     joined query is dominated by the HIPAA/Spanish signal. => the agent must split the
+     need into one aspect per skill/trait and feed multi_search (which the baseline does
+     not exploit). C6 (1.00) is the easy case: a single tightly-scoped skill query.
