@@ -1,13 +1,14 @@
 """FastAPI entrypoint.
 
-STUB — wires up the endpoints defined by the contract in CLAUDE.md.
-GET /health returns {"status": "ok"}. POST /chat is stubbed until the agent lands;
-it already returns a schema-valid response (never 500s) per engineering rules.
+Wires up the contract in CLAUDE.md: GET /health and POST /chat. /chat delegates to
+app.agent.handle_chat, which is stateless and always returns a schema-valid response
+(never 500s) per the engineering rules.
 """
 from __future__ import annotations
 
 from fastapi import FastAPI
 
+from app.agent import handle_chat
 from app.schemas import ChatRequest, ChatResponse, HealthResponse
 
 app = FastAPI(title="SHL Assessment Recommender")
@@ -20,10 +21,4 @@ def health() -> HealthResponse:
 
 @app.post("/chat", response_model=ChatResponse)
 def chat(req: ChatRequest) -> ChatResponse:
-    # TODO(agent-task): delegate to app.agent. Until then, return a safe,
-    # schema-valid placeholder (recommendations=null) so the contract holds.
-    return ChatResponse(
-        reply="Service scaffolded; the recommender is not implemented yet.",
-        recommendations=None,
-        end_of_conversation=False,
-    )
+    return handle_chat(req.messages)
