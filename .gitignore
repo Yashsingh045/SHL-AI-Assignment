@@ -7,4 +7,6 @@ evals/results/*.json
 !evals/results/.gitkeep
 # Retrieval index artifacts (data/index/) ARE committed so the deployed service
 # never needs to rebuild them — see scripts/build_index.py.
+# fastembed ONNX model cache — downloaded at build time, not committed.
+.fastembed_cache/
 .claude/

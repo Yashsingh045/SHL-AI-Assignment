@@ -3,7 +3,7 @@ uvicorn
 httpx
 pydantic>=2
 rank-bm25
-sentence-transformers
+fastembed
 numpy
 groq
 google-generativeai

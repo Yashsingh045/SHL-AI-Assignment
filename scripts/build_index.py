@@ -42,14 +42,12 @@ def main() -> None:
         json.dumps(corpus, ensure_ascii=False), encoding="utf-8"
     )
 
-    # --- Dense embeddings (normalized so cosine == dot product) ---
-    from sentence_transformers import SentenceTransformer
+    # --- Dense embeddings (fastembed / ONNX; already L2-normalized so cosine == dot) ---
+    from fastembed import TextEmbedding
 
-    print(f"Loading embedding model {EMBED_MODEL_NAME} ...")
-    model = SentenceTransformer(EMBED_MODEL_NAME)
-    emb = model.encode(
-        docs, normalize_embeddings=True, convert_to_numpy=True, show_progress_bar=True
-    ).astype(np.float32)
+    print(f"Loading embedding model {EMBED_MODEL_NAME} (fastembed) ...")
+    model = TextEmbedding(EMBED_MODEL_NAME)
+    emb = np.array(list(model.embed(docs)), dtype=np.float32)
     np.save(INDEX_DIR / "embeddings.npy", emb)
 
     (INDEX_DIR / "doc_urls.json").write_text(

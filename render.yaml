@@ -5,7 +5,9 @@ services:
     name: shl-assessment-recommender
     runtime: python
     plan: free
-    buildCommand: pip install -r requirements.txt
+    # Install deps, then PREFETCH the fastembed ONNX model into .fastembed_cache at
+    # build time (warmup also validates the committed index) so the first request is fast.
+    buildCommand: "pip install -r requirements.txt && python -c 'from app import retrieval; retrieval.warmup()'"
     startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /health
     envVars:

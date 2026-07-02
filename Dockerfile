@@ -4,7 +4,7 @@ FROM python:3.11-slim
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
-    HF_HOME=/app/.hf_cache \
+    FASTEMBED_CACHE_PATH=/app/.fastembed_cache \
     PORT=8000
 
 WORKDIR /app
@@ -17,6 +17,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 # these offline; it never fetches the catalog URL or shl.com at runtime.
 COPY app ./app
 COPY data ./data
+
+# Prefetch the fastembed ONNX model (all-MiniLM-L6-v2) into the cache at BUILD time
+# so the first request doesn't download it. Also validates the committed index.
+RUN python -c "from app import retrieval; retrieval.warmup()"
 
 EXPOSE 8000
 

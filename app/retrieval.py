@@ -4,14 +4,16 @@
 - multi_search(aspects, top_k)    -> per-aspect search() fused with RRF across
                                      aspects, deduped by url (one aspect per skill/trait).
 
-Index artifacts are built offline by scripts/build_index.py and committed under
-data/index/. They are loaded lazily on the first query (so importing this module is
-cheap, torch is only imported when a query actually runs, and scripts/build_index.py
-can import tokenize/EMBED_MODEL_NAME from here before the index exists).
+Query embeddings use fastembed (ONNX runtime) with all-MiniLM-L6-v2 — the SAME model
+weights and embedding space as the committed doc matrix (built with sentence-transformers;
+verified cosine 1.0000), but WITHOUT importing PyTorch, so the service fits the Render
+512 MB free tier. Index artifacts are built offline by scripts/build_index.py and
+committed under data/index/; they load lazily on the first query.
 """
 from __future__ import annotations
 
 import json
+import os
 import re
 from pathlib import Path
 from typing import Optional
@@ -21,10 +23,14 @@ from rank_bm25 import BM25Okapi
 
 from app import catalog
 
-EMBED_MODEL_NAME = "all-MiniLM-L6-v2"
+# fastembed's registry name for all-MiniLM-L6-v2 (same weights as the doc matrix).
+EMBED_MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
 RRF_K = 60  # Reciprocal Rank Fusion constant (standard default).
 
-_INDEX_DIR = Path(__file__).resolve().parent.parent / "data" / "index"
+_ROOT = Path(__file__).resolve().parent.parent
+_INDEX_DIR = _ROOT / "data" / "index"
+# ONNX model cache: populated at BUILD time (see render.yaml), read at runtime.
+_CACHE_DIR = os.getenv("FASTEMBED_CACHE_PATH") or str(_ROOT / ".fastembed_cache")
 
 _TOKEN_RE = re.compile(r"[a-z0-9][a-z0-9+#.]*")
 
@@ -76,19 +82,25 @@ def _index() -> tuple[list[dict], BM25Okapi, np.ndarray]:
 def _get_model():
     global _model
     if _model is None:
-        from sentence_transformers import SentenceTransformer
+        from fastembed import TextEmbedding
 
-        _model = SentenceTransformer(EMBED_MODEL_NAME)
+        _model = TextEmbedding(EMBED_MODEL_NAME, cache_dir=_CACHE_DIR)
     return _model
 
 
+def _embed_query(query: str) -> np.ndarray:
+    """Embed one query with fastembed -> normalized 384-d float32 (matches the doc matrix)."""
+    vec = next(iter(_get_model().embed([query])))
+    return np.asarray(vec, dtype=np.float32)
+
+
 def warmup() -> None:
-    """Eagerly load the index artifacts AND the embedding model.
+    """Eagerly load the index artifacts AND the embedding model (ONNX session).
 
     Called at service startup so the first /chat request doesn't pay index/model
     load latency (which would eat into the 30s per-call budget)."""
     _index()
-    _get_model()
+    _embed_query("warmup")
 
 
 # --------------------------------------------------------------------------- #
@@ -126,9 +138,7 @@ def search(query: str, top_k: int = 20,
     records, bm25, emb = _index()
     bm25_scores = np.asarray(bm25.get_scores(tokenize(query)), dtype=np.float32)
 
-    q_emb = _get_model().encode(
-        [query], normalize_embeddings=True, convert_to_numpy=True
-    ).astype(np.float32)[0]
+    q_emb = _embed_query(query)  # fastembed: normalized 384-d, same space as `emb`
     cos_scores = emb @ q_emb  # embeddings are normalized -> cosine similarity
 
     bm25_ranks = _ranks_from_scores(bm25_scores)
