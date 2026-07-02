@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+.pytest_cache/
+evals/results/*.json
+!evals/results/.gitkeep
+# Index artifacts are rebuilt from the committed catalog.
+data/index/
+.claude/

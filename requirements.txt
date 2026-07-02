@@ -1,0 +1,11 @@
+fastapi
+uvicorn
+httpx
+pydantic>=2
+rank-bm25
+sentence-transformers
+numpy
+groq
+google-generativeai
+python-dotenv
+pytest
