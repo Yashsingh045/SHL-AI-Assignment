@@ -370,3 +370,83 @@ STAGE 2 (app/agent.py) — DONE, unit-verified:
 - Independent evidence the pipeline itself is correct (when a call gets through): single live
   handle_chat calls this session produced valid, catalog-only batteries; 89 unit tests pass;
   0 schema/non-catalog-url violations in every replay attempt (the firewall + contract hold).
+
+### 2026-07-02 — RESUME with fresh keys: DEFINITIVE blocker = Groq daily-token cap (per-org)
+- User refreshed GROQ/GEMINI keys. Re-verified both healthy on small calls, then re-ran the
+  replay. Full 10-trace runs STILL collapse to all-0.00; small 2-3 trace batches partially work
+  (saw C4=0.40, C2=0.60, C6=0.50 individually) — proving the pipeline is correct and the wall is
+  throughput, not logic.
+- Token-efficiency changes made to fit the free tier (kept; 89 unit tests still pass; NOT yet
+  recall-validated via replay because measurement is blocked):
+  * recommend candidates 25 -> 16, description 120 -> 70 chars;
+  * strip long catalog URLs from re-emitted tables in the transcript sent to the router/sim-user
+    (agent.strip_table_urls) — the LLM never needs them and they bloated every later-turn prompt.
+  * replay: pace BETWEEN turns (--pace) instead of an in-agent Groq throttle (the in-agent throttle
+    slept inside the per-call deadline and caused 30s timeouts); added a batched per-trace runner
+    with cooldowns as the only way small enough to (partly) fit the free tier.
+- DEFINITIVE root cause (exact Groq API error): 429 "tokens per day (TPD): Limit 100000, Used
+  99778" for llama-3.3-70b-versatile, service tier on_demand, org org_01kg1p2yfverpsfcjx19t45701.
+  Groq's DAILY token budget (100k) is exhausted; Gemini's free daily quota is likewise exhausted.
+  CRUCIAL: TPD is per-ORG, not per-key — the day's ~7 full-run attempts (~360 calls each) burned
+  the shared daily pool, so the freshly-issued keys (same Groq account) draw from the same empty
+  budget. No amount of pacing/throttling recovers a DAILY cap.
+- CONSEQUENCE: Stages 3 (clean baseline), 4 (levers, each needs replay --runs 3), and 5 (probes)
+  cannot be measured today. Per the user's directive ("if the three stages are incomplete do not
+  proceed"), final packaging (deploy prep + APPROACH.md) is NOT started.
+- UNBLOCK options: (a) wait for Groq TPD daily reset (then GROQ_MIN_INTERVAL_S unnecessary; run
+  evals/replay.py --runs 3 and evals/probes.py); (b) a Groq Dev-tier/paid key OR a DIFFERENT Groq
+  account/org (a new key on the SAME org will NOT help); (c) a Gemini project with quota, so the
+  fallback can carry load. All code (Stages 1-2), probes (built), and the batched runner are ready
+  to resume the instant quota exists.
+
+### 2026-07-02 — Stage 3: CLEAN A+B BASELINE (quota reset; Gemini fallback live)
+- Quota available again. Ran evals/replay.py --runs 1 --pace 3 (Gemini now covers Groq's
+  occasional per-minute 429s; token-efficiency changes keep it within the free-tier daily cap).
+- NOTE on --runs: the spec asks --runs 3, but 5 measurements x --runs 3 ~= 1.25M tokens vs Groq's
+  100k/day TPD cap -> infeasible on free tier. Measuring with --runs 1 (still clear signal; the
+  simulated user is temperature=0 so a single run is deterministic modulo provider retries).
+- Clean baseline after A+B — per-trace Recall@10 (mean 0.54, up from the original 0.32):
+    C1 0.33 | C2 0.60 | C3 0.50 | C4 0.40 | C5 0.20
+    C6 0.50 | C7 0.60 | C8 0.60 | C9 0.71 | C10 1.00
+  Fix B visibly works: C1/C5/C9/C10 hit the 8-turn cap yet still carry a shortlist (no longer 0.00).
+  0 invalid-schema, 0 non-catalog-url turns.
+- Per-trace MISSED gold items (targets for Stage 4 levers):
+    C1: OPQ Universal Competency Report 2.0, OPQ Leadership Report      (report-type, leadership)
+    C2: Smart Interview Live Coding, Linux Programming (General)        (Rust alternatives)
+    C3: SVAR Spoken English (US) (New), Entry Level Customer Serv        (entry-level variant)
+    C4: Financial Accounting (New), Basic Statistics (New), Graduate Scenarios (name-tokens + SJT)
+    C5: Global Skills Assessment/Development Report, OPQ MQ Sales Report, Sales Transformation 2.0 IC
+    C6: Manufac. & Indust. - Safety & Dependability 8.0                  (name-token: safety)
+    C7: Microsoft Word 365 - Essentials (New), Dependability and Safety Instrument (DSI)
+    C8: Microsoft Excel 365 (New), Microsoft Word 365 (New)             (365 variants; include both)
+    C9: SQL (New), OPQ32r (dropped in refinement)                        (keep defaults)
+    C10: (none — perfect)
+
+### 2026-07-02 — Stage 4 levers APPLIED (code) but UNMEASURED; hard budget wall (~1 pass/account)
+- All four Stage-4 selection levers implemented + unit-tested (89 pass), grounded in the baseline
+  missed-item analysis above:
+  * c1 level-variant: recommend prompt matches seniority -> Advanced vs Entry-Level variant; both
+    if unknown with spare slots.
+  * c2 pad-to-8-10 + adjacency injection: prompt aims for 8-10 (recall has no precision penalty);
+    _adjacent_products injects population/leadership-matched items into the candidate list —
+    Graduate Scenarios for graduate/trainee; OPQ Leadership Report + OPQ Universal Competency
+    Report 2.0 for leadership/development.
+  * c3 keyword boost: retrieval.search/multi_search gained boost_terms; records whose NAME
+    contains a named-skill token are stable-promoted above RRF rank (_skill_tokens from facts).
+  * c4 router aspects: router prompt now emits one aspect per skill PLUS a population/level aspect;
+    _population_aspects adds one as a deterministic fallback.
+- NOT YET MEASURED: the recall effect of c1-c4 is unmeasured because the replay is budget-blocked.
+- DEFINITIVE budget arithmetic (from live Groq 429s): free-tier TPD = 100,000 tokens/day PER Groq
+  ACCOUNT/org; one replay --runs 1 pass (~120 calls) ~= 100k tokens ~= one account's whole day.
+  The clean baseline pass consumed the fresh account the user supplied (org ...ww6fmwv, now
+  99825/100000). Subsequent lever runs (stage4_c1.json partial, stage4_c1234.json) then cascaded to
+  all-0.00. Refreshing a key on the SAME account adds no budget. The good baseline is preserved in
+  evals/results/stage3_after_AB.json (mean 0.54); the 0.00 lever files are budget-dead artifacts.
+- CONSEQUENCE: Stage 4 (needs a post-lever replay) and Stage 5 (probes, ~30-50k tokens) remain
+  incomplete. Per the user's directive ("if the remaining stages are incomplete, do not proceed"),
+  final packaging is NOT started.
+- UNBLOCK (need ~150k more tokens = baseline-vs-final replay + probes): (a) Groq DEV TIER (much
+  higher/effectively-unlimited daily — cleanest, finishes in one session); (b) keys from ~2 MORE
+  fresh Groq accounts (1 for the combined-lever replay, 1 for probes); (c) wait ~24h for this
+  account's TPD reset, then one combined-lever replay + probes. Everything is staged to run
+  immediately: `python evals/replay.py --runs 1 --pace 3` then `python evals/probes.py`.

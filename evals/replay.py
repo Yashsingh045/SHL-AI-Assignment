@@ -56,8 +56,9 @@ def _persona_system(user_turns: list[str]) -> str:
 
 
 def _user_perspective_transcript(messages: list[dict]) -> str:
+    from app.agent import strip_table_urls
     return "\n".join(
-        f"{'ASSISTANT' if m['role'] == 'assistant' else 'YOU'}: {m['content']}"
+        f"{'ASSISTANT' if m['role'] == 'assistant' else 'YOU'}: {strip_table_urls(m['content'])}"
         for m in messages
     )
 

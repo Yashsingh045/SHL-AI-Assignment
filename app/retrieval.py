@@ -102,8 +102,24 @@ def _ranks_from_scores(scores: np.ndarray) -> np.ndarray:
     return ranks
 
 
-def search(query: str, top_k: int = 20) -> list[dict]:
-    """Rank catalog records for a single query via RRF of BM25 and cosine ranks."""
+def _apply_boost(records: list[dict], boost_terms: Optional[list[str]]) -> list[dict]:
+    """Stable-promote records whose NAME contains a boost term to the front,
+    preserving the original relative order within each group (c3 keyword boost)."""
+    terms = [t.lower() for t in (boost_terms or []) if t and len(t) >= 3]
+    if not terms:
+        return records
+    def hit(rec):
+        name = rec["name"].lower()
+        return any(t in name for t in terms)
+    boosted = [r for r in records if hit(r)]
+    rest = [r for r in records if not hit(r)]
+    return boosted + rest
+
+
+def search(query: str, top_k: int = 20,
+           boost_terms: Optional[list[str]] = None) -> list[dict]:
+    """Rank catalog records for a single query via RRF of BM25 and cosine ranks.
+    boost_terms (optional): records whose name contains a term are promoted."""
     if not query or not query.strip():
         return []
 
@@ -119,21 +135,25 @@ def search(query: str, top_k: int = 20) -> list[dict]:
     cos_ranks = _ranks_from_scores(cos_scores)
 
     rrf = 1.0 / (RRF_K + bm25_ranks + 1) + 1.0 / (RRF_K + cos_ranks + 1)
-    top = np.argsort(-rrf, kind="stable")[:top_k]
-    return [records[i] for i in top]
+    # Take a bit deeper than top_k so a name-boost can pull a match into the top_k.
+    order = np.argsort(-rrf, kind="stable")[: max(top_k, top_k + 10)]
+    ranked = [records[i] for i in order]
+    return _apply_boost(ranked, boost_terms)[:top_k]
 
 
-def multi_search(aspects: list[str], top_k: int = 20) -> list[dict]:
+def multi_search(aspects: list[str], top_k: int = 20,
+                 boost_terms: Optional[list[str]] = None) -> list[dict]:
     """Fuse per-aspect search() results with RRF across aspects; dedupe by url.
 
     Use one aspect string per distinct skill/trait, e.g.
     ["Java programming knowledge test", "stakeholder communication personality"].
+    boost_terms (optional): records whose name contains a term are promoted (c3).
     """
     aspects = [a for a in (aspects or []) if a and a.strip()]
     if not aspects:
         return []
     if len(aspects) == 1:
-        return search(aspects[0], top_k=top_k)
+        return search(aspects[0], top_k=top_k, boost_terms=boost_terms)
 
     # Retrieve deeper per aspect than top_k so fusion has room to promote items.
     depth = max(top_k, 30)
@@ -147,4 +167,5 @@ def multi_search(aspects: list[str], top_k: int = 20) -> list[dict]:
             best_record.setdefault(url, rec)
 
     order = sorted(fused, key=lambda u: fused[u], reverse=True)
-    return [best_record[u] for u in order[:top_k]]
+    ranked = [best_record[u] for u in order]
+    return _apply_boost(ranked, boost_terms)[:top_k]

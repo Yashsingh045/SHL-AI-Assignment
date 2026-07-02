@@ -75,7 +75,7 @@ def test_health():
 # --------------------------------------------------------------------------- #
 def test_chat_happy_path_shape(mock_llm, monkeypatch):
     monkeypatch.setattr(agent.retrieval, "multi_search",
-                        lambda aspects, top_k=25: [catalog.find_by_name(JAVA)])
+                        lambda aspects, top_k=25, **kw: [catalog.find_by_name(JAVA)])
     mock_llm["json_queue"] = [
         _route_json(intent="recommend", vague=False, aspects=["Java"]),
         {"items": [JAVA, VERIFY, OPQ], "reply": "A battery for a Java role."},
@@ -187,7 +187,7 @@ def test_chat_non_english_input(mock_llm):
 def test_chat_recommendations_clamped_to_10(mock_llm, monkeypatch):
     names = [r["name"] for r in catalog.all_records()[:15]]
     monkeypatch.setattr(agent.retrieval, "multi_search",
-                        lambda aspects, top_k=25: [catalog.find_by_name(n) for n in names])
+                        lambda aspects, top_k=25, **kw: [catalog.find_by_name(n) for n in names])
     mock_llm["json_queue"] = [
         _route_json(intent="recommend", vague=False, aspects=["x"]),
         {"items": names, "reply": "many"},
@@ -200,7 +200,7 @@ def test_chat_recommendations_clamped_to_10(mock_llm, monkeypatch):
 
 def test_chat_fake_assessment_dropped(mock_llm, monkeypatch):
     monkeypatch.setattr(agent.retrieval, "multi_search",
-                        lambda aspects, top_k=25: [catalog.find_by_name(JAVA)])
+                        lambda aspects, top_k=25, **kw: [catalog.find_by_name(JAVA)])
     mock_llm["json_queue"] = [
         _route_json(intent="recommend", vague=False, aspects=["Java"]),
         {"items": [JAVA, "Rust Programming (New)", "Totally Made Up Test"], "reply": "x"},

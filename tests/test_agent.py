@@ -80,7 +80,7 @@ def test_clarify_no_recs(mock_llm):
 def test_clarify_budget_forces_recommend(mock_llm, monkeypatch):
     # Two prior clarifying assistant turns already used -> a 3rd clarify is overridden.
     monkeypatch.setattr(agent.retrieval, "multi_search",
-                        lambda aspects, top_k=25: [_rec(JAVA)])
+                        lambda aspects, top_k=25, **kw: [_rec(JAVA)])
     mock_llm["json_queue"] = [
         _route_json(intent="clarify", vague=False, facts={"skills": ["Java"]}, aspects=["Java"]),
         {"items": [JAVA, OPQ], "reply": "Here is a battery."},  # recommend LLM step
@@ -101,7 +101,7 @@ def test_clarify_budget_forces_recommend(mock_llm, monkeypatch):
 # --------------------------------------------------------------------------- #
 def test_recommend_selects_and_validates(mock_llm, monkeypatch):
     monkeypatch.setattr(agent.retrieval, "multi_search",
-                        lambda aspects, top_k=25: [_rec(JAVA), _rec(SPRING), _rec(SQL)])
+                        lambda aspects, top_k=25, **kw: [_rec(JAVA), _rec(SPRING), _rec(SQL)])
     mock_llm["json_queue"] = [
         _route_json(intent="recommend", vague=False,
                     facts={"skills": ["Java", "Spring", "SQL"]},
@@ -120,7 +120,7 @@ def test_recommend_selects_and_validates(mock_llm, monkeypatch):
 
 def test_recommend_drops_hallucinated_item(mock_llm, monkeypatch):
     monkeypatch.setattr(agent.retrieval, "multi_search",
-                        lambda aspects, top_k=25: [_rec(JAVA)])
+                        lambda aspects, top_k=25, **kw: [_rec(JAVA)])
     mock_llm["json_queue"] = [
         _route_json(intent="recommend", vague=False, aspects=["Java"]),
         {"items": [JAVA, "Rust Programming (New)"], "reply": "x"},  # fake dropped
@@ -133,7 +133,7 @@ def test_recommend_drops_hallucinated_item(mock_llm, monkeypatch):
 
 def test_recommend_empty_falls_back_to_retrieval(mock_llm, monkeypatch):
     monkeypatch.setattr(agent.retrieval, "multi_search",
-                        lambda aspects, top_k=25: [_rec(JAVA), _rec(SPRING)])
+                        lambda aspects, top_k=25, **kw: [_rec(JAVA), _rec(SPRING)])
     mock_llm["json_queue"] = [
         _route_json(intent="recommend", vague=False, aspects=["Java"]),
         {"items": ["Totally Fake Test"], "reply": "x"},  # all invalid -> fallback
@@ -147,7 +147,7 @@ def test_recommend_empty_falls_back_to_retrieval(mock_llm, monkeypatch):
 # --------------------------------------------------------------------------- #
 def test_refine_surgical_add_drop(mock_llm, monkeypatch):
     monkeypatch.setattr(agent.retrieval, "search",
-                        lambda q, top_k=1: {"aws": [_rec(AWS)], "docker": [_rec(DOCKER)]}.get(
+                        lambda q, top_k=1, **kw: {"aws": [_rec(AWS)], "docker": [_rec(DOCKER)]}.get(
                             q.lower().split()[0], []))
     mock_llm["json_queue"] = [
         _route_json(intent="refine", vague=False,
@@ -167,7 +167,7 @@ def test_refine_surgical_add_drop(mock_llm, monkeypatch):
 
 
 def test_refine_impossible_add_pushback(mock_llm, monkeypatch):
-    monkeypatch.setattr(agent.retrieval, "search", lambda q, top_k=1: [])
+    monkeypatch.setattr(agent.retrieval, "search", lambda q, top_k=1, **kw: [])
     mock_llm["json_queue"] = [
         _route_json(intent="refine", vague=False,
                     current_shortlist_names=[JAVA],
