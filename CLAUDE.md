@@ -494,3 +494,27 @@ STAGE 2 (app/agent.py) — DONE, unit-verified:
      individual contributions are unknown; c2's harm is only inferable from the C7/C8 transcripts.
 - Stages 3-5 are executed (baseline 0.54 measured; levers measured; probes 10/10). Caveats above
   are documented, not hidden. Proceeding to final packaging.
+
+### 2026-07-02 — Final packaging (deploy prep + APPROACH.md)
+- Deploy readiness (Render free tier):
+  * Zero-network startup: no httpx/requests/urllib imported in app/; catalog (429 KB) + all 4
+    index artifacts committed and loaded at startup. Only runtime network = the LLM provider APIs
+    (never shl.com / the catalog URL). MiniLM weights download once from HF at warmup (cached).
+  * RSS measured 410 MB (darwin, catalog+index+MiniLM+FastAPI, model exercised). < 450 MB
+    threshold -> per instructions, NO change (kept local embeddings; did not switch query embedding
+    to a Gemini embeddings API).
+  * render.yaml: free Python web service, build=pip install -r requirements.txt,
+    start=uvicorn app.main:app --host 0.0.0.0 --port $PORT, healthCheckPath /health, env
+    GROQ_API_KEY/GEMINI_API_KEY (secrets) + GEMINI_MODEL=gemini-2.5-flash (env-driven; also the
+    code default in llm.py). README updated (local run, env vars, tests/replay/probes, Render steps).
+  * scripts/smoke.py <url>: /health + a full C9 multi-turn /chat, asserting schema-valid + catalog
+    urls each turn and a non-empty final shortlist with eoc=true.
+- Verified against a LOCAL uvicorn: /health 200; smoke.py health+schema+plumbing PASS; replay --http
+  runs end-to-end (0 schema / 0 non-catalog-url). The positive-path assertions (non-empty final
+  shortlist; live Recall) could NOT be exercised locally because this Groq account's daily token
+  budget was already spent — they run clean against the deployed service with a funded key.
+- APPROACH.md written (965 words, ~2 pages) from this log using only real numbers (0.48 naive
+  retrieval, 0.32 pre-fix, 0.54 after A+B, combined-lever per-trace, 10/10 probes, 410 MB RSS,
+  OPQ32r 8/10), including the 3 honest "what didn't work" bullets.
+- Security: .env gitignored + never committed; no gsk_/AIza key patterns anywhere in git history.
+- Unit suite: 89 passed (1 real-LLM test deselected without a key). Nothing committed (user commits).
