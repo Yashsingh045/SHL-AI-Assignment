@@ -1,0 +1,19 @@
+# Render deployment (free tier). Deploy: New + -> Blueprint -> point at this repo,
+# then set the two secret env vars (GROQ_API_KEY, GEMINI_API_KEY) in the dashboard.
+services:
+  - type: web
+    name: shl-assessment-recommender
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: GROQ_API_KEY          # secret — set in the Render dashboard
+        sync: false
+      - key: GEMINI_API_KEY        # secret — set in the Render dashboard
+        sync: false
+      - key: GEMINI_MODEL          # fallback model (also the code default)
+        value: gemini-2.5-flash
+      - key: PYTHON_VERSION
+        value: "3.11.9"

@@ -450,3 +450,47 @@ STAGE 2 (app/agent.py) — DONE, unit-verified:
   fresh Groq accounts (1 for the combined-lever replay, 1 for probes); (c) wait ~24h for this
   account's TPD reset, then one combined-lever replay + probes. Everything is staged to run
   immediately: `python evals/replay.py --runs 1 --pace 3` then `python evals/probes.py`.
+
+### 2026-07-02 — Stage 4 MEASURED (combined c1-c4) + Stage 5 probes 10/10 (fresh account)
+- NOTE on protocol: per-lever --runs 3 (~1.25M tokens) is impossible on free tier (100k TPD per
+  Groq account = ~1 replay pass). Applied c1-c4 together and measured the COMBINED effect once.
+- Stage 5 PROBES: first run 8/10. Two failures, each fixed with one minimal change; re-run 10/10:
+  * P3 (off-topic "best language to learn?" was clarified, not refused) -> strengthened the router
+    refuse_partial rule to cover general career/education/opinion advice (a tech named inside an
+    advice question is NOT a skill to assess). PASS.
+  * P7 (duration cap ignored) -> added _apply_duration_cap in _finalize: parse facts.duration_
+    constraint ("under 30 minutes" -> 30) and drop items whose catalog duration >= cap (unspecified
+    kept; never empty). PASS.
+  Final: 10/10 probes pass. (P1,P2,P4,P5,P6,P8,P9,P10 passed unchanged.)
+- Stage 4 COMBINED-LEVER replay (evals/results/stage4_final.json, --runs 1). Per-trace vs baseline:
+    trace  baseline  levers   note
+    C1       0.33  -> 1.00   WIN (c2 leadership OPQ reports injected + selected)
+    C2       0.60  -> 0.60   flat
+    C3       0.50  -> 0.50   flat
+    C4       0.40  -> 0.60   WIN (c2 Graduate Scenarios + c3 name-token boost)
+    C5       0.20  -> 0.60   WIN (c2 Global Skills / sales reports)
+    C6       0.50  -> 0.50   flat
+    C7       0.60  -> 0.20   REGRESSION (padding crowded out specific items)
+    C8       0.60  -> 0.00   REGRESSION (padding distracted recommender -> generic MS Office
+                              literacy + Global Skills reports; DROPPED the OPQ32r default)
+    C9       0.71  -> (n/a)  BUDGET-TRUNCATED (LLMError; account TPD hit near end of run)
+    C10      1.00  -> (n/a)  BUDGET-TRUNCATED
+  On the 8 comparable, fully-completed traces (C1-C8): baseline mean 0.466 -> levers 0.500
+  (+0.034 — marginal; big wins C1/C4/C5 partly offset by C7/C8 regressions). The printed run mean
+  0.40 is DEPRESSED by the two budget-truncated 0.00s and is NOT a valid A+B-vs-levers comparison.
+- POST-MEASUREMENT fix for the C8 defect (UNVALIDATED — budget exhausted before a re-run):
+  restructured the recommend prompt into a non-negotiable CORE block (most-SPECIFIC per-skill K
+  test + Verify G+ + OPQ32r, selected FIRST, never dropped) then padding — so padding can no longer
+  evict the default battery. Low-risk prompt strengthening; 89 unit tests still pass; needs one
+  replay pass to confirm C8 recovers and C1/C5 wins hold.
+- HONEST "what didn't work" (3):
+  1. c2 padding is double-edged: it delivered the biggest wins (C1 0.33->1.00, C5 0.20->0.60) but
+     also the worst regressions (C8 0.60->0.00, dropping the OPQ32r default) by distracting the
+     recommender from the specific core tests. Net only +0.034 on measured traces.
+  2. Free-tier token budget (100k TPD/Groq account; Gemini free daily also low) made the specified
+     protocol (--runs 3, one lever at a time) impossible; even a single 10-trace --runs 1 sometimes
+     truncates (C9/C10 here) when probes were run first in the same account-day.
+  3. Per-lever attribution was impossible (levers measured only in combination), so c1/c3/c4's
+     individual contributions are unknown; c2's harm is only inferable from the C7/C8 transcripts.
+- Stages 3-5 are executed (baseline 0.54 measured; levers measured; probes 10/10). Caveats above
+  are documented, not hidden. Proceeding to final packaging.
