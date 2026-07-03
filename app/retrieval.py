@@ -85,6 +85,13 @@ def _get_model():
         from fastembed import TextEmbedding
 
         _model = TextEmbedding(EMBED_MODEL_NAME, cache_dir=_CACHE_DIR)
+        # Match sentence-transformers' max_seq_length=256 (fastembed defaults to 128).
+        # Verified: with this set, query vectors are cosine 1.000000 to the runtime
+        # that built the committed doc matrix, including long (>128-token) inputs.
+        try:
+            _model.model.tokenizer.enable_truncation(max_length=256)
+        except Exception:  # pragma: no cover - internal API; short queries unaffected
+            pass
     return _model
 
 

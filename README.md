@@ -36,9 +36,10 @@ export GEMINI_API_KEY=...      # fallback LLM (Gemini 2.5 Flash)
 uvicorn app.main:app --host 0.0.0.0 --port 8000   # GET /health, POST /chat
 ```
 On startup the service loads the committed catalog + retrieval index (zero shl.com /
-catalog network calls) and warms the sentence-transformers model. The MiniLM model
-weights (~90 MB) download from HuggingFace on first startup and are cached in-instance;
-set `SHL_WARMUP=0` to skip warming (tests do this). Fully-loaded RSS ≈ 410 MB.
+catalog network calls) and warms the embedding model. Query embeddings use **fastembed**
+(ONNX runtime, `all-MiniLM-L6-v2` — same weights/space as the committed doc matrix, no
+PyTorch); the ONNX model (~80 MB) is fetched into `.fastembed_cache/` at build time.
+Set `SHL_WARMUP=0` to skip warming (tests do this). Fully-loaded RSS ≈ 260 MB.
 
 ## Required env vars
 | var | purpose | default |
@@ -68,12 +69,12 @@ use `--runs 1` if the daily budget is tight.
 ## Deploy to Render (free tier)
 1. Push this repo to GitHub (ensure `.env` is **not** committed — it is gitignored).
 2. Render → **New +** → **Blueprint** → select the repo. `render.yaml` configures a free
-   Python web service: build `pip install -r requirements.txt`, start
-   `uvicorn app.main:app --host 0.0.0.0 --port $PORT`, health check `/health`.
+   Python web service: build installs requirements **and prefetches the fastembed ONNX
+   model**, start `uvicorn app.main:app --host 0.0.0.0 --port $PORT`, health check `/health`.
 3. In the service's **Environment**, set the two secret vars: `GROQ_API_KEY` and
    `GEMINI_API_KEY` (`GEMINI_MODEL=gemini-2.5-flash` is set by the blueprint).
-4. Deploy. First boot downloads the MiniLM model, so the initial cold start is slower;
-   subsequent requests are fast (model is warmed at startup, before requests are served).
+4. Deploy. The embedding model is fetched at build time, so startup only loads the
+   committed index + ONNX session (~260 MB RSS — fits the 512 MB free tier).
 5. Validate:
    ```bash
    python scripts/smoke.py https://<your-app>.onrender.com

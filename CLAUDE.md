@@ -518,3 +518,25 @@ STAGE 2 (app/agent.py) — DONE, unit-verified:
   OPQ32r 8/10), including the 3 honest "what didn't work" bullets.
 - Security: .env gitignored + never committed; no gsk_/AIza key patterns anywhere in git history.
 - Unit suite: 89 passed (1 real-LLM test deselected without a key). Nothing committed (user commits).
+
+### 2026-07-03 — OOM fix: embedding runtime swap sentence-transformers -> fastembed (ONNX)
+- Render deploy OOM'd (>512MB): sentence-transformers imports PyTorch (~300-500MB). Fixed by
+  swapping the RUNTIME, not the model: fastembed TextEmbedding("sentence-transformers/
+  all-MiniLM-L6-v2") for QUERY embedding; the committed doc matrix (built with ST) stays valid.
+- Space-parity gate: 5 sample queries cosine(ST, fastembed) = 1.000000, both 384-d normalized.
+  FOUND + FIXED a truncation mismatch: fastembed defaults to 128-token truncation vs ST's 256,
+  so LONG inputs diverged (C9's 973-char naive query: cosine 0.8986; retrieval_check C9 0.43 ->
+  0.14). Set model.tokenizer.enable_truncation(max_length=256) in app/retrieval._get_model()
+  AND scripts/build_index.py -> cosine 1.000000 incl. long inputs.
+- Correctness: evals/retrieval_check.py now EXACTLY reproduces the pre-swap table (C1 .33 C2 .40
+  C3 .75 C4 .60 C5 .20 C6 1.00 C7 .20 C8 .40 C9 .43 C10 .50; MEAN 0.48/0.57). 89 unit tests pass;
+  probes 10/10 (re-run on the new runtime with the day's fresh quota).
+- requirements.txt: sentence-transformers -> fastembed (onnxruntime; no torch). Only
+  scripts/build_index.py referenced ST (build-time only, never imported by app/) — switched it to
+  fastembed too. Verified torch is NOT in sys.modules with the app fully loaded.
+- Model files fetched at BUILD time, not first request: render.yaml buildCommand now runs
+  `python -c 'from app import retrieval; retrieval.warmup()'` (populates .fastembed_cache/,
+  gitignored); Dockerfile does the same via RUN + FASTEMBED_CACHE_PATH.
+- RSS: 410 MB (torch) -> 260 MB (fastembed) fully loaded (catalog+index+ONNX+FastAPI) — fits the
+  Render 512MB free tier with headroom. README + APPROACH.md updated (410 -> 260 MB; build-time
+  prefetch noted). Nothing committed (user commits).

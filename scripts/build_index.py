@@ -47,6 +47,12 @@ def main() -> None:
 
     print(f"Loading embedding model {EMBED_MODEL_NAME} (fastembed) ...")
     model = TextEmbedding(EMBED_MODEL_NAME)
+    # Match sentence-transformers' 256-token truncation (the committed matrix was
+    # built at 256; fastembed defaults to 128) so rebuilds stay in the same space.
+    try:
+        model.model.tokenizer.enable_truncation(max_length=256)
+    except Exception:
+        pass
     emb = np.array(list(model.embed(docs)), dtype=np.float32)
     np.save(INDEX_DIR / "embeddings.npy", emb)
 
